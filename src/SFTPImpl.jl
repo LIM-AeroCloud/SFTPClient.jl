@@ -1,28 +1,75 @@
-using FileWatching
-using Downloads
-using LibCURL
-using URIs
-using CSV
-using Dates
+## Load packages
+# import FileWatching as fw
+import Downloads
+import LibCURL
+import URIs
+import CSV
+import Dates
+import Downloads: Downloader
+import URIs: URI
+import Logging
 
-if Sys.iswindows()
-    const fileSeparator = "\\"
-else
-    const fileSeparator = "/"
-end
+## Define constants
+const fileSeparator = Sys.iswindows() ? "\\" : "/"
 
 
+## Structs
+
+"""
+    mutable struct SFTP
+
+`SFTP` manages the connection to the server and stores all relevant connection data.
+
+# Constructors
+
+    SFTP(url::AbstractString, username::AbstractString, public_key_file::AbstractString, public_key_file::AbstractString; kwargs)::SFTP
+    SFTP(url::AbstractString, username::AbstractString, password::AbstractString=""; kwargs)::SFTP
+
+Construct an `SFTP` client from the url and either user information or public and private key file.
+
+## Arguments
+
+- `url`: The url to connect to, e.g., sftp://mysite.com
+- `username`/`password`: user credentials
+- `public_key_file`/`public_key_file`: authentication certificates
+
+## Keyword arguments
+
+- `create_known_hosts_entry`: Automatically create an entry in known hosts
+- `disable_verify_peer`: verify the authenticity of the peer's certificate
+- `disable_verify_host`: verify the host in the server's TLS certificate
+- `verbose`: display a lot of verbose curl information
+
+
+# Important notice
+
+A username must be provided for both methods to work.
+
+Before using the constructor method for certificate authentication, private and public
+key files must be created and stored in the ~/.ssh folder and on the server, e.g.
+~/.ssh/id_rsa and ~/.ssh/id_rsa.pub. Additionally, the host must be added to the
+known_hosts file in the ~/.ssh folder.
+
+The correct setup can be tested in the terminal with
+`ssh myuser@mysitewhereIhaveACertificate.com`.
+
+
+# Examples
+
+    sftp = SFTP("sftp://mysitewhereIhaveACertificate.com", "myuser", "test.pub", "test.pem")
+    sftp = SFTP("sftp://mysitewhereIhaveACertificate.com", "myuser")
+    sftp = SFTP("sftp://test.rebex.net", "demo", "password")
+"""
 mutable struct SFTP
     downloader::Downloader
     uri::URI
-    username::Union{String, Nothing}
-    password::Union{String, Nothing}
+    username::String
+    password::String
     disable_verify_peer::Bool
     disable_verify_host::Bool
     verbose::Bool
-    public_key_file::Union{String, Nothing}
-    private_key_file::Union{String, Nothing}
-
+    public_key_file::String
+    private_key_file::String
 end
 
 
@@ -37,51 +84,120 @@ struct SFTPStatStruct
 end
 
 
-function check_and_create_fingerprint(hostNameOrIP::AbstractString)
-    dir = homedir()
+## External constructors
 
+# See SFTP struct for help/docstrings
+function SFTP(
+    url::AbstractString,
+    username::AbstractString,
+    public_key_file::AbstractString,
+    private_key_file::AbstractString;
+    disable_verify_peer::Bool=false,
+    disable_verify_host::Bool=false,
+    verbose::Bool=false
+)::SFTP
+    # Setup Downloader
+    downloader = Downloader()
+    # Set URI, ensure trailing slash in path
+    uri = set_url(url)
+    # Instantiate and post-process easy hooks
+    sftp = SFTP(downloader, uri, username, "", disable_verify_peer, disable_verify_host, verbose, public_key_file, private_key_file)
+    reset_easy_hook(sftp)
+    return sftp
+end
+
+
+# See SFTP struct for help/docstrings
+function SFTP(
+    url::AbstractString,
+    username::AbstractString,
+    password::AbstractString="";
+    create_known_hosts_entry::Bool=true,
+    disable_verify_peer::Bool=false,
+    disable_verify_host::Bool=false,
+    verbose::Bool=false
+)::SFTP
+    # Setup Downloader
+    downloader = Downloader()
+    # Set URI, ensure trailing slash in path
+    uri = set_url(url)
+    # Update known_hosts, if selected
+    if !isempty(password) && create_known_hosts_entry
+        check_and_create_fingerprint(uri.host)
+    end
+    # Instantiate and post-process easy hooks
+    sftp = SFTP(downloader, uri, username, password, disable_verify_peer, disable_verify_host, verbose, "", "")
+    reset_easy_hook(sftp)
+    return sftp
+end
+
+
+## Helper functions for SFTP struct and fingerprints
+
+
+Base.show(io::IO, sftp::SFTP) =  println(io, "SFTP($(sftp.username)@$(sftp.uri.host))")
+
+
+"""
+    set_url(url::URI)::URI
+
+Ensure URI path with trailing slash.
+"""
+function set_url(url::AbstractString)::URI
+    uri = URI(url)
+    isdirpath(uri.path) || (path = uri.path * '/')
+    URIs.resolvereference(uri, URIs.escapepath(uri.path))
+end
+
+
+"""
+    check_and_create_fingerprint(hostNameOrIP::AbstractString)::Nothing
+
+Check for `hostNameOrIP` in known_hosts.
+"""
+function check_and_create_fingerprint(hostNameOrIP::AbstractString)::Nothing
     try
-        known_hosts_file = joinpath(dir, ".ssh/known_hosts")
+        # Try to read known_hosts file
+        known_hosts_file = joinpath(homedir(), ".ssh", "known_hosts")
         rows=CSV.File(known_hosts_file;delim=" ",types=String,header=false)
+        # Scan known hosts for current host
         for row in rows
             row[1] != hostNameOrIP && continue
-            println("Found host in known_hosts")
+            @info "$hostNameOrIP found host in known_hosts"
             # check the entry we found
             fingerprintAlgo = row[2]
             #These are known to work
-            (fingerprintAlgo == "ecdsa-sha2-nistp256" || fingerprintAlgo == "ecdsa-sha2-nistp256" || fingerprintAlgo ==  "ecdsa-sha2-nistp521"  || fingerprintAlgo == "ssh-rsa" ) && return
-            println("Warning: Correct fingerprint not found in known_hosts")
+            if (fingerprintAlgo == "ecdsa-sha2-nistp256" || fingerprintAlgo == "ecdsa-sha2-nistp256" ||
+                fingerprintAlgo ==  "ecdsa-sha2-nistp521"  || fingerprintAlgo == "ssh-rsa" )
+                return
+            else
+                @warn "correct fingerprint not found in known_hosts"
+            end
         end
-        println("Creating fingerprint")
-        println("Hostname: $hostNameOrIP")
+        @info "Creating fingerprint" hostNameOrIP
         create_fingerprint(hostNameOrIP)
-    catch e
-        println(e)
+    catch error
+        @warn "An error occurred during fingerprint check; creating a new fingerprint" error
         create_fingerprint(hostNameOrIP)
     end
-
-    return nothing
 end
 
 
-function Base.show(io::IO, sftp::SFTP)
-    join(io, [
-        "URL:       $(sftp.uri)",
-        "Username:  $(sftp.username)",
-    ], "\n")
-end
+"""
+    create_fingerprint(hostNameOrIP::AbstractString)::Nothing
 
-
-function create_fingerprint(hostNameOrIP::AbstractString)
-    dir = homedir()
-    sshdir = joinpath(dir, ".ssh/")
-    !isdir( sshdir) && mkdir(sshdir)
-    known_hosts = joinpath(dir, ".ssh/known_hosts")
+Create a new entry in known_hosts for `hostNameOrIP`.
+"""
+function create_fingerprint(hostNameOrIP::AbstractString)::Nothing
+    # Check for .ssh/known_hosts and create if missing
+    sshdir = mkpath(joinpath(homedir(), ".ssh"))
+    known_hosts = joinpath(sshdir, "known_hosts")
+    # Import ssh key as trusted key or throw error (except for known test issue)
     keyscan = ""
     try
         keyscan = readchomp(`ssh-keyscan -t ssh-rsa $(hostNameOrIP)`)
-    catch e
-        println("Keyscan failed. Check if ssh-keyscan is installed")
+    catch
+        @error "keyscan failed; check if ssh-keyscan is installed"
         if hostNameOrIP == "test.rebex.net"
             # Fix missing keyscan on NanoSoldier
             keyscan = """test.rebex.net ssh-rsa AAAAB3NzaC1yc2EAAAABJQAAAQEAkRM6RxDdi3uAGogR3nsQMpmt43X4WnwgMzs8VkwUCqikewxqk4U7EyUSOUeT3CoUNOtywrkNbH83e6/yQgzc3M8i/eDzYtXaNGcKyLfy3Ci6XOwiLLOx1z2AGvvTXln1RXtve+Tn1RTr1BhXVh2cUYbiuVtTWqbEgErT20n4GWD4wv7FhkDbLXNi8DX07F9v7+jH67i0kyGm+E3rE+SaCMRo3zXE6VO+ijcm9HdVxfltQwOYLfuPXM2t5aUSfa96KJcA0I4RCMzA/8Dl9hXGfbWdbD2hK1ZQ1pLvvpNPPyKKjPZcMpOznprbg+jIlsZMWIHt7mq2OJXSdruhRrGzZw=="""
@@ -90,99 +206,19 @@ function create_fingerprint(hostNameOrIP::AbstractString)
         end
     end
 
-    println("Adding fingerprint $(keyscan) to known_hosts")
-    open(known_hosts, "a") do f
+    # Add host to known hosts
+    @info "Adding fingerprint to known_hosts" keyscan
+    open(known_hosts, "a+") do f
         println(f, keyscan)
     end
-
-    return true
-end
-
-
-"""
-    SFTP(url::AbstractString, username::AbstractString, public_key_file::AbstractString, private_key_file::AbstractString;disable_verify_peer=false, disable_verify_host=false, verbose=false)
-
-Creates a new SFTP client using certificate authentication and keys in the files specified
-
-    sftp = SFTP("sftp://mysitewhereIhaveACertificate.com", "myuser", "test.pub", "test.pem")
-"""
-function SFTP(url::AbstractString, username::AbstractString, public_key_file::AbstractString, private_key_file::AbstractString;disable_verify_peer=false, disable_verify_host=false, verbose=false)
-    downloader = Downloads.Downloader()
-    uri = URI(url)
-    sftp = SFTP(downloader, uri, username, nothing, disable_verify_peer, disable_verify_host, verbose, public_key_file, private_key_file)
-    slashEnd(sftp)
-    reset_easy_hook(sftp)
-    return sftp
-end
-
-
-"""
- SFTP(url::AbstractString, username::AbstractString;disable_verify_peer=false, disable_verify_host=false)
-
- Creates a new SFTP client using certificate authentication.
-
-sftp = SFTP("sftp://mysitewhereIhaveACertificate.com", "myuser")
-
-Note! You must provide the username for this to work.
-
-Before using this method, you must set up your certificates in ~/.ssh/id_rsa and ~/.ssh/id_rsa.pub
-
-Of course, the host need to be in the known_hosts file as well.
-
-Test using your local client first: ssh myuser@mysitewhereIhaveACertificate.com
-
-See other method if you want to use files not in ~/ssh/
-
-"""
-function SFTP(url::AbstractString, username::AbstractString;disable_verify_peer=false, disable_verify_host=false, verbose=false)
-    downloader = Downloads.Downloader()
-    uri = URI(url)
-    sftp = SFTP(downloader, uri, username, nothing, disable_verify_peer, disable_verify_host, verbose, nothing, nothing)
-    slashEnd(sftp)
-    reset_easy_hook(sftp)
-    return sftp
-end
-
-"""
- SFTP(url::AbstractString, username::AbstractString, password::AbstractString;create_known_hosts_entry=true, disable_verify_peer=false, disable_verify_host=false)
-
-Creates a new SFTP Client:
-url: The url to connect to, e.g., sftp://mysite.com
-username: The username to use
-password: The users password
-create_known_hosts_entry: Automatically create an entry in known hosts
-
-Example:
-    sftp = SFTP("sftp://test.rebex.net", "demo", "password")
-"""
-function SFTP(url::AbstractString, username::AbstractString, password::AbstractString;create_known_hosts_entry=true, disable_verify_peer=false, disable_verify_host=false, verbose=false)
-    downloader = Downloads.Downloader()
-    uri = URI(url)
-    host = uri.host
-    create_known_hosts_entry && check_and_create_fingerprint(host)
-    sftp = SFTP(downloader, uri, username, password, disable_verify_peer, disable_verify_host, verbose, nothing, nothing)
-    slashEnd(sftp)
-    reset_easy_hook(sftp)
-    return sftp
-end
-
-function slashEnd(sftp)
-    path = sftp.uri.path
-    if !endswith(path, "/")
-        path = path * "/"
-    end
-    newUrl = resolvereference(sftp.uri, escapepath(path))
-
-    sftp.uri = newUrl
-
 end
 
 
 function setStandardOptions(sftp, easy, info)
-    if sftp.username != nothing
+    if !isempty(sftp.username)
         Downloads.Curl.setopt(easy, Downloads.Curl.CURLOPT_USERNAME, sftp.username)
     end
-    if sftp.password != nothing
+    if !isempty(sftp.password)
         Downloads.Curl.setopt(easy, Downloads.Curl.CURLOPT_PASSWORD, sftp.password)
     end
     if sftp.disable_verify_host
@@ -191,10 +227,10 @@ function setStandardOptions(sftp, easy, info)
     if sftp.disable_verify_peer
         Downloads.Curl.setopt(easy, Downloads.Curl.CURLOPT_SSL_VERIFYPEER , 1)
     end
-    if sftp.public_key_file != nothing
+    if !isempty(sftp.public_key_file)
         Downloads.Curl.setopt(easy, Downloads.Curl.CURLOPT_SSH_PUBLIC_KEYFILE, sftp.public_key_file)
     end
-    if sftp.private_key_file != nothing
+    if !isempty(sftp.private_key_file)
         Downloads.Curl.setopt(easy, Downloads.Curl.CURLOPT_SSH_PRIVATE_KEYFILE, sftp.private_key_file)
     end
     if sftp.verbose
@@ -207,13 +243,13 @@ function reset_easy_hook(sftp::SFTP)
     downloader = sftp.downloader
     downloader.easy_hook = (easy, info) -> begin
         setStandardOptions(sftp, easy, info)
-        Downloads.Curl.setopt(easy, CURLOPT_DIRLISTONLY, 1)
+        Downloads.Curl.setopt(easy, Downloads.Curl.CURLOPT_DIRLISTONLY, 1)
     end
 end
 
 
 function sftpescapepath(path::String)
-    return escapepath(path)
+    return URIs.escapepath(path)
 end
 
 
@@ -222,20 +258,20 @@ end
 =#
 function handleRelativePath(fileName, sftp::SFTP)
     baseUrl = string(sftp.uri)
-    #println("base url $baseUrl")
-    resolvedReference = resolvereference(baseUrl, fileName)
-    fileName = "'" * unescapeuri(resolvedReference.path) * "'"
-    println(fileName)
+    @debug "base url" baseUrl
+    resolvedReference = URIs.resolvereference(baseUrl, fileName)
+    fileName = "'" * URIs.unescapeuri(resolvedReference.path) * "'"
+    @debug "file name" fileName
     return fileName
 end
 
 
 function ftp_command(sftp::SFTP, command::String)
     slist = Ptr{Cvoid}(0)
-    slist = curl_slist_append(slist, command)
+    slist = LibCURL.curl_slist_append(slist, command)
     sftp.downloader.easy_hook = (easy, info) -> begin
         setStandardOptions(sftp, easy, info)
-        Downloads.Curl.setopt(easy,  CURLOPT_QUOTE, slist)
+        Downloads.Curl.setopt(easy,  Downloads.Curl.CURLOPT_QUOTE, slist)
     end
 
     uri = string(sftp.uri)
@@ -245,7 +281,7 @@ function ftp_command(sftp::SFTP, command::String)
     try
         output = Downloads.download(uri, io; sftp.downloader)
     finally
-        curl_slist_free_all(slist)
+        LibCURL.curl_slist_free_all(slist)
         reset_easy_hook(sftp)
     end
 
@@ -293,7 +329,7 @@ function Base.walkdir(sftp::SFTP, root; topdown=true, follow_symlinks=false, one
             f(sftp, p)
         catch err
             show(err)
-            isa(err, IOError) || rethrow()
+            isa(err, Base.IOError) || rethrow()
             try
                 onerror(err)
             catch err2
@@ -306,7 +342,7 @@ function Base.walkdir(sftp::SFTP, root; topdown=true, follow_symlinks=false, one
             f(p)
         catch err
             show(err)
-            isa(err, IOError) || rethrow()
+            isa(err, Base.IOError) || rethrow()
             try
                 onerror(err)
             catch err2
@@ -382,17 +418,17 @@ Base.filemode(st::SFTPStatStruct) = st.mode
 
 
 function parseDate(monthPart::String, dayPart::String, yearOrTimePart::String)
-     yearStr::String = occursin(":",yearOrTimePart) ? string(year(now())) : yearOrTimePart
-     timeStr::String = !occursin(":",yearOrTimePart) ? "00:00" : yearOrTimePart
+     yearStr::String = occursin(":", yearOrTimePart) ? string(Dates.year(Dates.now())) : yearOrTimePart
+     timeStr::String = !occursin(":", yearOrTimePart) ? "00:00" : yearOrTimePart
 
-     dateTime = DateTime("$monthPart $dayPart $yearStr $timeStr",dateformat"u d yyyy H:M ")
+     dateTime = Dates.DateTime("$monthPart $dayPart $yearStr $timeStr", Dates.dateformat"u d yyyy H:M ")
 
-    return datetime2unix(dateTime)
+    return Dates.datetime2unix(dateTime)
 end
 
 
 function parseMode(s::String)::UInt
-    length(s) != 10 && error("Not correct lenght")
+    length(s) != 10 && error("Not correct length")
     dirChar = s[1]
     dir = (dirChar == 'd') ? 0x4000 : 0x8000
 
@@ -469,7 +505,7 @@ function sftpstat(sftp::SFTP, path::AbstractString)
         if !isdirpath(path)
             path = path * "/"
         end
-        newUrl = resolvereference(sftp.uri,sftpescapepath(path))
+        newUrl = URIs.resolvereference(sftp.uri,sftpescapepath(path))
         io = IOBuffer();
         try
             output = Downloads.download(string(newUrl), io; sftp.downloader)
@@ -485,7 +521,7 @@ function sftpstat(sftp::SFTP, path::AbstractString)
         return makeStruct.(parseStat.(stats))
         #return files
     catch e
-        rethrow()
+        rethrow(e)
     end
 end
 
@@ -500,8 +536,8 @@ upload.(sftp,files)
 """
 function upload(sftp::SFTP, file_name::AbstractString)
     open(file_name, "r") do local_file
-        file = escapeuri(basename(file_name))
-        uri = resolvereference(sftp.uri, file)
+        file = URIs.escapeuri(basename(file_name))
+        uri = URIs.resolvereference(sftp.uri, file)
         output = Downloads.request(string(uri), input=local_file;downloader=sftp.downloader)
     end
 
@@ -529,13 +565,13 @@ function Base.download(
     sftp::SFTP,
     file_name::AbstractString,
     output = tempname();
-    downloadDir::Union{String, Nothing}=nothing
+    downloadDir::String = ""
 )
     if file_name == "." || file_name == ".."
         return
     end
 
-    if downloadDir != nothing
+    if !isempty(downloadDir)
         if !isdirpath(downloadDir)
             downloadDir = downloadDir * fileSeparator
         end
@@ -545,11 +581,11 @@ function Base.download(
         output = downloadDir * file_name
      end
 
-     uri = resolvereference(sftp.uri, escapeuri(file_name))
+     uri = URIs.resolvereference(sftp.uri, URIs.escapeuri(file_name))
     try
         output = Downloads.download(string(uri), output; sftp.downloader)
     catch e
-        rethrow()
+        rethrow(e)
     end
     return output
 end
@@ -585,7 +621,7 @@ function Base.readdir(sftp::SFTP, join::Bool = false, sort::Bool = true)
         join && return joinpath.(dir, files)
 
         return files
-    catch e
+    catch
         rethrow()
     end
 end
@@ -604,10 +640,10 @@ function Base.cd(sftp::SFTP, dir::AbstractString)
         if !isdirpath(dir)
             dir = dir * "/"
         end
-        newUrl = resolvereference(oldUrl,sftpescapepath(dir))
+        newUrl = URIs.resolvereference(oldUrl,sftpescapepath(dir))
         sftp.uri = newUrl
         readdir(sftp)
-    catch e
+    catch
         sftp.uri = oldUrl
         rethrow()
     end

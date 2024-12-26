@@ -137,68 +137,55 @@ Base.show(io::IO, sftp::SFTP) =  println(io, "SFTP(\"$(sftp.username)@$(sftp.uri
 Base.broadcastable(sftp::SFTP) = Ref(sftp)
 
 
-#¡ Fixed, but not needed anymore! Trailing slashes are no longer mandatory.
 """
-    set_url(url::URI)::URI
+    check_and_create_fingerprint(host::AbstractString)::Nothing
 
-Ensure URI path with trailing slash.
+Check for `host` in known_hosts.
 """
-function set_url(url::AbstractString)::URI
-    uri = URI(url)
-    path = isdirpath(uri.path) ? uri.path : uri.path * '/'
-    URIs.resolvereference(uri, URIs.escapepath(path))
-end
-
-
-"""
-    check_and_create_fingerprint(hostNameOrIP::AbstractString)::Nothing
-
-Check for `hostNameOrIP` in known_hosts.
-"""
-function check_and_create_fingerprint(hostNameOrIP::AbstractString)::Nothing
+function check_and_create_fingerprint(host::AbstractString)::Nothing
     try
         # Try to read known_hosts file
         known_hosts_file = joinpath(homedir(), ".ssh", "known_hosts")
         rows=CSV.File(known_hosts_file;delim=" ",types=String,header=false)
         # Scan known hosts for current host
         for row in rows
-            row[1] != hostNameOrIP && continue
-            @info "$hostNameOrIP found host in known_hosts"
+            row[1] != host && continue
+            @info "$host found host in known_hosts"
             # check the entry we found
-            fingerprintAlgo = row[2]
+            fingerprint_algo = row[2]
             #These are known to work
-            if (fingerprintAlgo == "ecdsa-sha2-nistp256" || fingerprintAlgo == "ecdsa-sha2-nistp256" ||
-                fingerprintAlgo ==  "ecdsa-sha2-nistp521"  || fingerprintAlgo == "ssh-rsa" )
+            if (fingerprint_algo == "ecdsa-sha2-nistp256" || fingerprint_algo == "ecdsa-sha2-nistp256" ||
+                fingerprint_algo ==  "ecdsa-sha2-nistp521"  || fingerprint_algo == "ssh-rsa" )
                 return
             else
                 @warn "correct fingerprint not found in known_hosts"
             end
         end
-        @info "Creating fingerprint" hostNameOrIP
-        create_fingerprint(hostNameOrIP)
+        @info "Creating fingerprint" host
+        create_fingerprint(host)
     catch error
         @warn "An error occurred during fingerprint check; creating a new fingerprint" error
-        create_fingerprint(hostNameOrIP)
+        create_fingerprint(host)
     end
 end
 
 
 """
-    create_fingerprint(hostNameOrIP::AbstractString)::Nothing
+    create_fingerprint(host::AbstractString)::Nothing
 
-Create a new entry in known_hosts for `hostNameOrIP`.
+Create a new entry in known_hosts for `host`.
 """
-function create_fingerprint(hostNameOrIP::AbstractString)::Nothing
+function create_fingerprint(host::AbstractString)::Nothing
     # Check for .ssh/known_hosts and create if missing
     sshdir = mkpath(joinpath(homedir(), ".ssh"))
     known_hosts = joinpath(sshdir, "known_hosts")
     # Import ssh key as trusted key or throw error (except for known test issue)
     keyscan = ""
     try
-        keyscan = readchomp(`ssh-keyscan -t ssh-rsa $(hostNameOrIP)`)
+        keyscan = readchomp(`ssh-keyscan -t ssh-rsa $(host)`)
     catch
         @error "keyscan failed; check if ssh-keyscan is installed"
-        if hostNameOrIP == "test.rebex.net"
+        if host == "test.rebex.net"
             # Fix missing keyscan on NanoSoldier
             keyscan = """test.rebex.net ssh-rsa AAAAB3NzaC1yc2EAAAABJQAAAQEAkRM6RxDdi3uAGogR3nsQMpmt43X4WnwgMzs8VkwUCqikewxqk4U7EyUSOUeT3CoUNOtywrkNbH83e6/yQgzc3M8i/eDzYtXaNGcKyLfy3Ci6XOwiLLOx1z2AGvvTXln1RXtve+Tn1RTr1BhXVh2cUYbiuVtTWqbEgErT20n4GWD4wv7FhkDbLXNi8DX07F9v7+jH67i0kyGm+E3rE+SaCMRo3zXE6VO+ijcm9HdVxfltQwOYLfuPXM2t5aUSfa96KJcA0I4RCMzA/8Dl9hXGfbWdbD2hK1ZQ1pLvvpNPPyKKjPZcMpOznprbg+jIlsZMWIHt7mq2OJXSdruhRrGzZw=="""
         else
@@ -299,7 +286,7 @@ end
 
 function myjoinpath(path::AbstractString, name::AbstractString)
     path == "." && return name
-    path*"/" * name * "/"
+    path * "/" * name * "/"
 end
 
 

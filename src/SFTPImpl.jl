@@ -5,7 +5,7 @@ import LibCURL
 import URIs
 import CSV
 import Dates
-import Downloads: Downloader
+import Downloads: Downloader, Curl.Easy
 import URIs: URI
 import Logging
 
@@ -96,10 +96,9 @@ function SFTP(
     disable_verify_host::Bool=false,
     verbose::Bool=false
 )::SFTP
-    # Setup Downloader
+    # Setup Downloader and URI
     downloader = Downloader()
-    # Set URI, ensure trailing slash in path
-    uri = set_url(url)
+    uri = URI(url)
     # Instantiate and post-process easy hooks
     sftp = SFTP(downloader, uri, username, "", disable_verify_peer, disable_verify_host, verbose, public_key_file, private_key_file)
     reset_easy_hook(sftp)
@@ -117,10 +116,9 @@ function SFTP(
     disable_verify_host::Bool=false,
     verbose::Bool=false
 )::SFTP
-    # Setup Downloader
+    # Setup Downloader and URI
     downloader = Downloader()
-    # Set URI, ensure trailing slash in path
-    uri = set_url(url)
+    uri = URI(url)
     # Update known_hosts, if selected
     if !isempty(password) && create_known_hosts_entry
         check_and_create_fingerprint(uri.host)
@@ -134,10 +132,12 @@ end
 
 ## Helper functions for SFTP struct and fingerprints
 
+Base.show(io::IO, sftp::SFTP) =  println(io, "SFTP(\"$(sftp.username)@$(sftp.uri.host)\")")
 
-Base.show(io::IO, sftp::SFTP) =  println(io, "SFTP($(sftp.username)@$(sftp.uri.host))")
+Base.broadcastable(sftp::SFTP) = Ref(sftp)
 
 
+#¡ Fixed, but not needed anymore! Trailing slashes are no longer mandatory.
 """
     set_url(url::URI)::URI
 
@@ -145,8 +145,8 @@ Ensure URI path with trailing slash.
 """
 function set_url(url::AbstractString)::URI
     uri = URI(url)
-    isdirpath(uri.path) || (path = uri.path * '/')
-    URIs.resolvereference(uri, URIs.escapepath(uri.path))
+    path = isdirpath(uri.path) ? uri.path : uri.path * '/'
+    URIs.resolvereference(uri, URIs.escapepath(path))
 end
 
 
@@ -214,42 +214,42 @@ function create_fingerprint(hostNameOrIP::AbstractString)::Nothing
 end
 
 
-function setStandardOptions(sftp, easy, info)
-    if !isempty(sftp.username)
-        Downloads.Curl.setopt(easy, Downloads.Curl.CURLOPT_USERNAME, sftp.username)
-    end
-    if !isempty(sftp.password)
-        Downloads.Curl.setopt(easy, Downloads.Curl.CURLOPT_PASSWORD, sftp.password)
-    end
-    if sftp.disable_verify_host
-        Downloads.Curl.setopt(easy, Downloads.Curl.CURLOPT_SSL_VERIFYHOST , 0)
-    end
-    if sftp.disable_verify_peer
-        Downloads.Curl.setopt(easy, Downloads.Curl.CURLOPT_SSL_VERIFYPEER , 1)
-    end
-    if !isempty(sftp.public_key_file)
-        Downloads.Curl.setopt(easy, Downloads.Curl.CURLOPT_SSH_PUBLIC_KEYFILE, sftp.public_key_file)
-    end
-    if !isempty(sftp.private_key_file)
-        Downloads.Curl.setopt(easy, Downloads.Curl.CURLOPT_SSH_PRIVATE_KEYFILE, sftp.private_key_file)
-    end
-    if sftp.verbose
-        Downloads.Curl.setopt(easy, Downloads.Curl.CURLOPT_VERBOSE, 1)
-    end
+## Helper functions Curl options
+
+"""
+    set_stdopt(sftp::SFTP, easy::Easy)::Nothing
+
+Set defaults for a number of curl `easy` options as defined by the `sftp` client.
+"""
+function set_stdopt(sftp::SFTP, easy::Easy)::Nothing
+    # User credentials
+    isempty(sftp.username) || Downloads.Curl.setopt(easy, Downloads.Curl.CURLOPT_USERNAME, sftp.username)
+    isempty(sftp.password) || Downloads.Curl.setopt(easy, Downloads.Curl.CURLOPT_PASSWORD, sftp.password)
+    # Verifications
+    sftp.disable_verify_host && Downloads.Curl.setopt(easy, Downloads.Curl.CURLOPT_SSL_VERIFYHOST , 0)
+    sftp.disable_verify_peer && Downloads.Curl.setopt(easy, Downloads.Curl.CURLOPT_SSL_VERIFYPEER , 1)
+    # Certificates
+    isempty(sftp.public_key_file) || Downloads.Curl.setopt(easy, Downloads.Curl.CURLOPT_SSH_PUBLIC_KEYFILE, sftp.public_key_file)
+    isempty(sftp.private_key_file) || Downloads.Curl.setopt(easy, Downloads.Curl.CURLOPT_SSH_PRIVATE_KEYFILE, sftp.private_key_file)
+    # Verbosity
+    sftp.verbose && Downloads.Curl.setopt(easy, Downloads.Curl.CURLOPT_VERBOSE, 1)
+    return
 end
 
 
-function reset_easy_hook(sftp::SFTP)
+"""
+    reset_easy_hook(sftp::SFTP)::Nothing
+
+Reset curl `easy` options to standard as defined by the `sftp` client.
+"""
+function reset_easy_hook(sftp::SFTP)::Nothing
     downloader = sftp.downloader
-    downloader.easy_hook = (easy, info) -> begin
-        setStandardOptions(sftp, easy, info)
+    # ¡Not sure why the unused info param is needed, but otherwise walkdir will not work!
+    downloader.easy_hook = (easy::Easy, info) -> begin
+        set_stdopt(sftp, easy)
         Downloads.Curl.setopt(easy, Downloads.Curl.CURLOPT_DIRLISTONLY, 1)
     end
-end
-
-
-function sftpescapepath(path::String)
-    return URIs.escapepath(path)
+    return
 end
 
 
@@ -269,8 +269,9 @@ end
 function ftp_command(sftp::SFTP, command::String)
     slist = Ptr{Cvoid}(0)
     slist = LibCURL.curl_slist_append(slist, command)
-    sftp.downloader.easy_hook = (easy, info) -> begin
-        setStandardOptions(sftp, easy, info)
+    # ¡Not sure why the unused info param is needed, but otherwise walkdir will not work!
+    sftp.downloader.easy_hook = (easy::Easy, info) -> begin
+        set_stdopt(sftp, easy)
         Downloads.Curl.setopt(easy,  Downloads.Curl.CURLOPT_QUOTE, slist)
     end
 
@@ -380,9 +381,6 @@ function Base.walkdir(sftp::SFTP, root; topdown=true, follow_symlinks=false, one
     end
     return Channel{Tuple{String,Vector{String},Vector{String}}}(chnl -> _walkdir(chnl, root))
 end
-
-
-Base.broadcastable(sftp::SFTP) = Ref(sftp)
 
 
 """
@@ -496,8 +494,9 @@ sftpstat(sftp::SFTP) = sftpstat(sftp::SFTP, ".")
 Like Julia stat, but returns a Vector of SFTPStatStructs. Note that you can only run this on directories. Can be used for checking if a file was modified, and much more.
 """
 function sftpstat(sftp::SFTP, path::AbstractString)
-    sftp.downloader.easy_hook = (easy, info) -> begin
-        setStandardOptions(sftp, easy, info)
+    # ¡Not sure why the unused info param is needed, but otherwise walkdir will not work!
+    sftp.downloader.easy_hook = (easy::Easy, info) -> begin
+        set_stdopt(sftp, easy)
     end
 
     output = nothing
@@ -505,7 +504,7 @@ function sftpstat(sftp::SFTP, path::AbstractString)
         if !isdirpath(path)
             path = path * "/"
         end
-        newUrl = URIs.resolvereference(sftp.uri,sftpescapepath(path))
+        newUrl = URIs.resolvereference(sftp.uri, URIs.escapepath(path))
         io = IOBuffer();
         try
             output = Downloads.download(string(newUrl), io; sftp.downloader)
@@ -640,7 +639,7 @@ function Base.cd(sftp::SFTP, dir::AbstractString)
         if !isdirpath(dir)
             dir = dir * "/"
         end
-        newUrl = URIs.resolvereference(oldUrl,sftpescapepath(dir))
+        newUrl = URIs.resolvereference(oldUrl, URIs.escapepath(dir))
         sftp.uri = newUrl
         readdir(sftp)
     catch

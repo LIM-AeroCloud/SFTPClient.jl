@@ -229,32 +229,28 @@ Reads the current directory. Returns a vector of Strings just like the regular r
 """
 function Base.readdir(sftp::SFTP, join::Bool = false, sort::Bool = true)
     output = nothing
-    try
-        uriString = string(sftp.uri)
-        if !endswith(uriString, "/")
-            uriString = uriString * "/"
-            sftp.uri = URI(uriString)
-        end
-
-        dir = sftp.uri.path
-        io = IOBuffer();
-        output = Downloads.download(uriString, io; sftp.downloader)
-
-        # Don't know why this is necessary
-        res = String(take!(io))
-        io2 = IOBuffer(res)
-        files = readlines(io2;keep=false)
-
-        files = filter(x->x != "..", files)
-        files = filter(x->x != ".", files)
-
-        sort && sort!(files)
-        join && return joinpath.(dir, files)
-
-        return files
-    catch
-        rethrow()
+    uriString = string(sftp.uri)
+    if !endswith(uriString, "/")
+        uriString = uriString * "/"
+        sftp.uri = URI(uriString)
     end
+
+    dir = sftp.uri.path
+    io = IOBuffer();
+    output = Downloads.download(uriString, io; sftp.downloader)
+
+    # Don't know why this is necessary
+    res = String(take!(io))
+    io2 = IOBuffer(res)
+    files = readlines(io2;keep=false)
+
+    files = filter(x->x != "..", files)
+    files = filter(x->x != ".", files)
+
+    sort && sort!(files)
+    join && return joinpath.(dir, files)
+
+    return files
 end
 
 

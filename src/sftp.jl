@@ -168,6 +168,22 @@ Base.show(io::IO, sftp::SFTP) =  println(io, "SFTP(\"$(sftp.username)@$(sftp.uri
 Base.broadcastable(sftp::SFTP) = Ref(sftp)
 
 
+## Custom Exceptions
+
+"""
+    PathNotFoundError(path)
+
+The `path` (file or folder) was not found.
+"""
+struct PathNotFoundError <: Exception
+  path::String
+end
+
+function Base.showerror(io::IO, e::PathNotFoundError)
+  println(io, "PathNotFoundError: directory or file not found\n$(e.path)")
+end
+
+
 ## Helper functions for processing of server paths
 
 #¡ Trailing slashes needed for StatStruct!
@@ -193,6 +209,48 @@ Note: The URI stored in `sftp` itself is not updated.
 function change_uripath(sftp::SFTP, path::AbstractString)::URI
     isdirpath(path) || (path *= "/")
     URIs.resolvereference(sftp.uri, URIs.escapepath(path))
+end
+
+
+"""
+    splitbase(path::AbstractString; split_dirpath::Bool=true, return_dirpath::Bool=true) -> Tuple{String,String}
+
+Split `path` in a directory and base part (part after the last trailing slash or backslash on
+Windows) and return a `Tuple{String,String}` with the directory and basename.
+
+Trailing slashes in a `path` are ignored unless `split_dirpath` is set to `false`.
+In this case, the full `path` is returned as directory together with an empty basename.
+
+Directories are return with a trailing slash unless `return_dirpath` is set to `false`.
+"""
+function splitbase(path::AbstractString; split_dirpath::Bool=true, return_dirpath::Bool=true)::Tuple{String,String}
+    # Handle trailing slash in path
+    split_dirpath && isdirpath(path) && (path = dirname(path))
+    # Split directory and base
+    dir, base = dirname(path), basename(path)
+    # Enforce trailing slash
+    return_dirpath && (dir = joinpath(dir, ""))
+    return dir, base
+end
+
+
+"""
+    findbase(stats::Vector{SFTPStatStruct}, base::AbstractString, path::AbstractString) -> Int
+
+Return the index of `base` in `stats` or throw and `PathNotFoundError`, if `base` is not found.
+"""
+function findbase(stats::Vector{SFTPStatStruct}, base::AbstractString, path::AbstractString)::Int
+    # Get path names and find base in it
+    pathnames = [s.desc for s in stats]
+    @show pathnames, base
+    i = findfirst(isequal(base), pathnames)
+    # Exception handling, if path is not found
+    if isnothing(i)
+        i = findall(startswith(base), pathnames)
+        i = length(i) == 1 ? i[1] : throw(PathNotFoundError(path))
+    end
+    # Return index of base in stats
+    return i
 end
 
 
@@ -305,7 +363,8 @@ end
 """
     statscan(sftp::SFTP, path::AbstractString="."; show_cwd_and_parent::Bool=false) -> Vector{SFTPStatStruct}
 
-Like stat, but returns a Vector of `SFTPStatStruct`.
+Like `stat`, but returns a Vector of `SFTPStatStruct` with filesystem stats
+for all objects in the given `path`.
 
 Note that you can only run this on directories.
 
@@ -338,6 +397,27 @@ function statscan(sftp::SFTP, path::AbstractString="."; show_cwd_and_parent::Boo
         filter!(s -> s.desc != "." && s.desc != "..", stats)
     end
     return stats
+end
+
+
+"""
+    stat(sftp::SFTP, path::AbstractString=".") -> SFTPStatStruct
+
+Return the stat data for `path` on the `sftp` server.
+
+Note: This returns only stat data for one object, but stat data for all objects in
+the same folder is obtained internally. If you need stat data for more than object
+in the same folder, use `statscan` for better performance and reduced connections
+to the server.
+"""
+function stat(sftp::SFTP, path::AbstractString=".")::SFTPStatStruct
+    # Split path in basename and remaining path
+    dir, base = (path == "." || path == "..") ? (path, path) :  splitbase(path)
+    # Get stats of all path objects in the containing folder of base
+    stats = statscan(sftp, dir, show_cwd_and_parent=true)
+    # Find and return the stats of base
+    i = findbase(stats, base, path)
+    return stats[i]
 end
 
 

@@ -263,8 +263,7 @@ function Base.cd(sftp::SFTP, dir::AbstractString)
     prev_url = sftp.uri
     try
         # Change server path and save in sftp
-        url = change_uripath(sftp, dir)
-        sftp.uri = url
+        sftp.uri = change_uripath(sftp.uri, dir)
         readdir(sftp)
     catch
         # Ensure previous url on error

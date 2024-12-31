@@ -194,42 +194,51 @@ Ensure URI path with trailing slash.
 """
 function set_url(url::AbstractString)::URI
     uri = URI(url)
-    path = isdirpath(uri.path) ? uri.path : uri.path * '/'
-    URIs.resolvereference(uri, URIs.escapepath(path))
+    change_uripath(uri, uri.path)
 end
 
 
 """
-    change_uripath(sftp::SFTP, path::AbstractString) -> URI
+    change_uripath(uri::URI, path::AbstractString) -> URI
 
-Return an updated URI struct based on the `sftp` URI with the given `path`.
-
-Note: The URI stored in `sftp` itself is not updated.
+Return an updated `uri` struct with the given `path`.
 """
-function change_uripath(sftp::SFTP, path::AbstractString)::URI
+function change_uripath(uri::URI, path::AbstractString)::URI
     isdirpath(path) || (path *= "/")
-    URIs.resolvereference(sftp.uri, URIs.escapepath(path))
+    uri = URIs.resolvereference(uri, URIs.escapepath(path))
+    # Fix issue in URIs until PR #62 is merged (can be removed after merge)
+    startswith(uri.path, "//") && (uri = URIs.resolvereference(uri, uri.path[2:end]))
+    return uri
 end
 
 
 """
-    splitbase(path::AbstractString; split_dirpath::Bool=true, return_dirpath::Bool=true) -> Tuple{String,String}
+    splitbase(path::AbstractString; strip_empty_base::Bool=true, return_dirpath::Bool=true) -> Tuple{String,String}
 
-Split `path` in a directory and base part (part after the last trailing slash or backslash on
-Windows) and return a `Tuple{String,String}` with the directory and basename.
+Split the `path` in a directory and base part, where the base part is the last non-empty part
+after the path separator (backslash on windows, slash on other OS).
+Return a `Tuple{String,String}` with the `dirname` and `basename`.
 
-Trailing slashes in a `path` are ignored unless `split_dirpath` is set to `false`.
-In this case, the full `path` is returned as directory together with an empty basename.
-
-Directories are return with a trailing slash unless `return_dirpath` is set to `false`.
+Trailing slashes in a `path` are ignored and the last given basename is always split
+unless `strip_empty_base` is set to `false`. In this case, the full `path` is returned
+as directory together with an empty basename.
+Directories are returned with a trailing path separator unless `trailing_slash` is set to `false`.
+The trailing path separator is OS-dependent. If `url` is set to `true`, slashes are
+enforced as path separators.
 """
-function splitbase(path::AbstractString; split_dirpath::Bool=true, return_dirpath::Bool=true)::Tuple{String,String}
+function splitbase(
+    path::AbstractString;
+    strip_empty_base::Bool=true,
+    trailing_slash::Bool=true,
+    url::Bool=false
+)::Tuple{String,String}
     # Handle trailing slash in path
-    split_dirpath && isdirpath(path) && (path = dirname(path))
+    path_separator = Sys.iswindows() && !url ? "\\" : "/"
+    strip_empty_base && endswith(path, path_separator) && (path = path[1:end-1])
     # Split directory and base
     dir, base = dirname(path), basename(path)
-    # Enforce trailing slash
-    return_dirpath && (dir = joinpath(dir, ""))
+    # Enforce trailing slash or os dependent separator
+    trailing_slash && (dir *= path_separator)
     return dir, base
 end
 
@@ -242,10 +251,10 @@ Return the index of `base` in `stats` or throw and `PathNotFoundError`, if `base
 function findbase(stats::Vector{SFTPStatStruct}, base::AbstractString, path::AbstractString)::Int
     # Get path names and find base in it
     pathnames = [s.desc for s in stats]
-    @show pathnames, base
     i = findfirst(isequal(base), pathnames)
     # Exception handling, if path is not found
     if isnothing(i)
+        @warn "base not found in path; attempting to recover with similar basename"
         i = findall(startswith(base), pathnames)
         i = length(i) == 1 ? i[1] : throw(PathNotFoundError(path))
     end
@@ -265,7 +274,7 @@ function check_and_create_fingerprint(host::AbstractString)::Nothing
     try
         # Try to read known_hosts file
         known_hosts_file = joinpath(homedir(), ".ssh", "known_hosts")
-        rows=CSV.File(known_hosts_file;delim=" ",types=String,header=false)
+        rows=CSV.File(known_hosts_file; delim=" ", types=String, header=false)
         # Scan known hosts for current host
         for row in rows
             row[1] != host && continue
@@ -283,7 +292,7 @@ function check_and_create_fingerprint(host::AbstractString)::Nothing
         @info "Creating fingerprint" host
         create_fingerprint(host)
     catch error
-        @warn "An error occurred during fingerprint check; creating a new fingerprint" error
+        @warn "An error occurred during fingerprint check; attempting to create a new fingerprint" error
         create_fingerprint(host)
     end
 end
@@ -378,7 +387,7 @@ function statscan(sftp::SFTP, path::AbstractString="."; show_cwd_and_parent::Boo
     end
 
     # Get server stats for given path
-    url = change_uripath(sftp, path)
+    url = change_uripath(sftp.uri, path)
     io = IOBuffer();
     try
          Downloads.download(string(url), io; sftp.downloader)

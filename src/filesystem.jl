@@ -1,4 +1,140 @@
+"""
+    pwd(sftp::SFTP) -> String
 
+Return the current URI path of the SFTP client.
+"""
+Base.pwd(sftp::SFTP)::String = isempty(sftp.uri.path) ? "/" : sftp.uri.path
+
+
+"""
+    walkdir(
+        sftp::SFTP,
+        root::AbstractString=".";
+        topdown::Bool=true,
+        follow_symlinks::Bool=false,
+        sort::Bool=true
+    ) -> Channel{Tuple{String,Vector{String},Vector{String}}}
+
+Return an iterator that walks the directory tree of the given `root` of the `sftp` client.
+If the `root` is ommitted, the current URI path of the `sftp` client is used.
+The iterator returns a tuple containing `(rootpath, dirs, files)`.
+The iterator starts at the `root` unless `topdown` is set to `false`.
+If `follow_symlinks` is set to `true`, the sources of symlinks are listed rather
+than the symlink itself as file. If `sort` is set to `true`, the files and directories
+are listed alphabetically.
+
+# Examples
+
+```julia
+for (root, dirs, files) in walkdir(sftp, "/")
+    println("Directories in \$root")
+    for dir in dirs
+        println(joinpath(root, dir)) # path to directories
+    end
+    println("Files in \$root")
+    for file in files
+        println(joinpath(root, file)) # path to files
+    end
+end
+```
+"""
+function Base.walkdir(
+    sftp::SFTP,
+    root::AbstractString=".";
+    topdown::Bool=true,
+    follow_symlinks::Bool=false,
+    sort::Bool=true
+)::Channel{Tuple{String,Vector{String},Vector{String}}}
+    function _walkdir(chnl, root)::Nothing
+        # Init
+        uri = change_uripath(sftp.uri, root)
+        pathobjects = (;
+            dirs = Vector{String}(),
+            files = Vector{String}(),
+            scans = Dict{String,Any}()
+        )
+        # Get stats on current folder
+        scans = statscan(sftp, uri.path; sort)
+        # Loop over stats of current folder
+        for statstruct in scans
+            name = statstruct.desc
+            # Handle symbolic links and assign files and folders
+            if islink(statstruct)
+                symlink_source!(sftp, name, pathobjects, follow_symlinks)
+            elseif isdir(statstruct)
+                push!(pathobjects.dirs, name)
+            elseif isfile(statstruct)
+                push!(pathobjects.files, name)
+            else
+                @warn "skipping path object of unknown mode" name
+            end
+        end
+        # Save path objects top-down
+        if topdown
+            push!(chnl, (uri.path, pathobjects.dirs, pathobjects.files))
+        end
+        # Scan subdirectories recursively
+        for dir in pathobjects.dirs
+            _walkdir(chnl, joinpath(uri, dir).path)
+        end
+        # Save path objects bottom-up
+        if !topdown
+            push!(chnl, (uri.path, pathobjects.dirs, pathobjects.files))
+        end
+        return
+    end
+    return Channel{Tuple{String,Vector{String},Vector{String}}}(chnl -> _walkdir(chnl, root))
+end
+
+
+"""
+    symlink_source!(
+        sftp::SFTP,
+        link::AbstractString,
+        pathobjects::@NamedTuple{dirs::Vector{String},files::Vector{String},scans::Dict{String,Any}},
+        follow_symlinks::Bool
+    ) -> Nothing
+
+Analyse the symbolic `link` on the `sftp` server and add it to the respective `pathobjects` list.
+Save the source of the symlink, if `follow_symlinks` is set to `true`, otherwise save symlinks as files.
+"""
+function symlink_source!(
+    sftp::SFTP,
+    link::AbstractString,
+    pathobjects::@NamedTuple{dirs::Vector{String},files::Vector{String},scans::Dict{String,Any}},
+    follow_symlinks::Bool
+)::Nothing
+    # Split file name and link source
+    linkparts = split(link, "->") .|> strip
+
+    # Get file name and source path of symlink
+    file, source = linkparts
+    uri, base = splitdir(sftp, source)
+    # Check correct link format
+    if isempty(linkparts)
+        return linkerror(link)
+    elseif length(linkparts) ≠ 2
+        push!(pathobjects.files, file)
+        return linkerror(link)
+    # Add link to files and return, if not following symlinks
+    elseif !follow_symlinks
+        push!(pathobjects.files, file)
+        return
+    end
+    if uri.path ∉ keys(pathobjects.scans)
+        # Get stats for containing source folder
+        linkscans = statscan(sftp, uri.path)
+        pathobjects.scans[uri.path] = Dict(getfield.(linkscans, :desc) .=> linkscans)
+    end
+    # Add link source to pathobjects
+    try
+        isdir(pathobjects.scans[uri.path][base]) ?
+            push!(pathobjects.dirs, file) : push!(pathobjects.files, file)
+    catch
+        push!(pathobjects.files, file)
+    end
+    return
+end
 
 
 #=
@@ -35,92 +171,6 @@ function ftp_command(sftp::SFTP, command::String)
     end
 
     return output
-end
-
-
-function myjoinpath(path::AbstractString, name::AbstractString)
-    path == "." && return name
-    path * "/" * name * "/"
-end
-
-
-"""
-    SFTPClient.walkdir(sftp::SFTP, root; topdown=true, follow_symlinks=false, onerror=throw)
-
-    Return an iterator that walks the directory tree of a directory.
-The iterator returns a tuple containing `(rootpath, dirs, files)`.
-
-
-# Examples
-```julia
-for (root, dirs, files) in walkdir(sftp, ".")
-    println("Directories in \$root")
-    for dir in dirs
-        println(joinpath(root, dir)) # path to directories
-    end
-    println("Files in \$root")
-    for file in files
-        println(joinpath(root, file)) # path to files
-    end
-end
-```
-"""
-function Base.walkdir(sftp::SFTP, root; topdown=true, follow_symlinks=false, onerror=throw)
-    function _walkdir(chnl, root)
-        tryf2( f, sftp, p) = try
-            f(sftp, p)
-        catch err
-            show(err)
-            isa(err, Base.IOError) || rethrow()
-            try
-                onerror(err)
-            catch err2
-                close(chnl, err2)
-            end
-            return
-        end
-
-        tryf( f, p) = try
-            f(p)
-        catch err
-            show(err)
-            isa(err, Base.IOError) || rethrow()
-            try
-                onerror(err)
-            catch err2
-                close(chnl, err2)
-            end
-            return
-        end
-
-        content = tryf2(statscan, sftp , root)
-        content === nothing && return
-        dirs = Vector{String}()
-        files = Vector{String}()
-        for statstruct in content
-            name = statstruct.desc
-            path = myjoinpath(root, name)
-            isadir = tryf(isdir, statstruct)
-            # If we're not following symlinks, then treat all symlinks as files
-            if (!follow_symlinks && something(tryf(islink, statstruct), true)) || !something(tryf(isdir, statstruct), false)
-                push!(files, name)
-            else
-                push!(dirs, name)
-            end
-        end
-
-        if topdown
-            push!(chnl, (root, dirs, files))
-        end
-        for dir in dirs
-            _walkdir(chnl, myjoinpath(root, dir))
-        end
-        if !topdown
-            push!(chnl, (root, dirs, files))
-        end
-        nothing
-    end
-    return Channel{Tuple{String,Vector{String},Vector{String}}}(chnl -> _walkdir(chnl, root))
 end
 
 
@@ -223,6 +273,26 @@ end
 
 
 """
+    splitdir(sftp::SFTP, path::AbstractString=".") -> Tuple{URI,String}
+
+Join the `path` with the path of the URI in `sftp` and then split it into the
+directory name and base name. Return a Tuple of `URI` with the split path and
+a `String` with the base name.
+"""
+function Base.splitdir(sftp::SFTP, path::AbstractString=".")::Tuple{URI,String}
+    # Join the path with the sftp.uri, ensure no trailing slashes in the path
+    # ℹ First enforce trailing slashes with joinpath(..., ""), then remove the slash with path[1:end-1]
+    path = joinpath(sftp.uri, string(path), "").path[1:end-1]
+    # ¡ workaround for URIs joinpath
+    startswith(path, "//") && (path = path[2:end])
+    # Split directory from base name
+    dir, base = splitdir(path)
+    # Convert dir to a URI with trailing slash
+    joinpath(URI(sftp.uri; path=dir), ""), base
+end
+
+
+"""
     readdir(sftp::SFTP, join::Bool = false, sort::Bool = true)
 
 Reads the current directory. Returns a vector of Strings just like the regular readdir function.
@@ -242,10 +312,9 @@ function Base.readdir(sftp::SFTP, join::Bool = false, sort::Bool = true)
     # Don't know why this is necessary
     res = String(take!(io))
     io2 = IOBuffer(res)
-    files = readlines(io2;keep=false)
+    files = readlines(io2; keep=false)
 
-    files = filter(x->x != "..", files)
-    files = filter(x->x != ".", files)
+    filter!(x->x ≠ ".." && x ≠ ".", files)
 
     sort && sort!(files)
     join && return joinpath.(dir, files)

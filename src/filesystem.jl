@@ -1,9 +1,185 @@
+## Server exchange functions
+
+"""
+    upload(sftp::SFTP, file::AbstractString)
+
+Upload (put) a `file` to the server. Broadcasting can be used too.
+
+files=readdir()
+upload.(sftp,files)
+"""
+function upload(sftp::SFTP, file::AbstractString)::Nothing
+    open(file, "r") do local_file
+        file = URIs.escapeuri(basename(file))
+        uri = URIs.resolvereference(sftp.uri, file)
+        Downloads.request(string(uri), input=local_file; downloader=sftp.downloader)
+    end
+    return
+end
+
+
+# TODO Update docstring
+"""
+    SFTPClient.download(sftp::SFTP, file_name::AbstractString,
+        output = tempname();downloadDir::Union{String, Nothing}=nothing)
+
+Download a file. You can download it and use it directly, or save it to a file.
+Specify downloadDir if you want to save downloaded files. You can also use broadcasting.
+Example:
+
+sftp = SFTP("sftp://test.rebex.net/pub/example/", "demo", "password")
+files=readdir(sftp)
+downloadDir="/tmp"
+SFTPClient.download.(sftp, files, downloadDir=downloadDir)
+
+You can also use it like this:
+df=DataFrame(CSV.File(SFTPClient.download(sftp, "/mydir/test.csv")))
+"""
+function Base.download(
+    sftp::SFTP,
+    filename::AbstractString,
+    output::String = ""
+)::String
+    # Define output
+    output = isempty(output) ? tempname() : normpath(output, basename(filename))
+    # Error handling for existing folders/files
+    if isdir(output)
+        @error "the specified download file is a directory and cannot be overwritten"
+        return output
+    elseif isfile(output)
+        @warn "specified download file already exists; overwrite (y/n)?"
+        confirm = readline()
+        while true
+            if startswith(lowercase(confirm), "y")
+                break
+            elseif startswith(lowercase(confirm), "n")
+                return output
+            end
+        end
+    end
+
+    # Download file
+    uri = URIs.resolvereference(sftp.uri, URIs.escapeuri(filename))
+    Downloads.download(string(uri), output; sftp.downloader)
+    return output
+end
+
+
+## Path object checks
+
+"""
+    Base.isdir(st::SFTPStatStruct) -> UInt
+
+Return the filemode in the `SFTPStatStruct`.
+"""
+Base.filemode(st::SFTPStatStruct)::UInt = st.mode
+
+
+"""
+    islink(st::SFTPStatStruct) -> Bool
+
+Analyse the `SFTPStatStruct` and return `true` for a symbolic link, `false` otherwise.
+"""
+Base.islink(st::SFTPStatStruct)::Bool = filemode(st) & 0xf000 == 0xa000
+
+
+"""
+    isdir(st::SFTPStatStruct) -> Bool
+
+Analyse the `SFTPStatStruct` and return `true` for a directory, `false` otherwise.
+"""
+Base.isdir(st::SFTPStatStruct)::Bool = filemode(st) & 0xf000 == 0x4000
+
+
+"""
+    isfile(st::SFTPStatStruct) -> Bool
+
+Analyse the `SFTPStatStruct` and return `true` for a file, `false` otherwise.
+"""
+Base.isfile(st::SFTPStatStruct)::Bool = filemode(st) & 0xf000 == 0x8000
+
+
+## Base filesystem functions
+
 """
     pwd(sftp::SFTP) -> String
 
 Return the current URI path of the SFTP client.
 """
 Base.pwd(sftp::SFTP)::String = isempty(sftp.uri.path) ? "/" : sftp.uri.path
+
+
+"""
+    cd(sftp::SFTP, dir::AbstractString)
+
+Change to `dir` in the uri of the `sftp` client.
+"""
+function Base.cd(sftp::SFTP, dir::AbstractString)::Nothing
+    prev_url = sftp.uri
+    try
+        # Change server path and save in sftp
+        sftp.uri = change_uripath(sftp.uri, dir)
+        # Test validity of new path
+        readdir(sftp)
+    catch
+        # Ensure previous url on error
+        sftp.uri = prev_url
+        rethrow()
+    end
+    return
+end
+
+
+"""
+    mv(
+        sftp::SFTP,
+        old_name::AbstractString,
+        new_name::AbstractString;
+    )
+
+Move, i.e. rename, the file from `old_name` to `new_name` in the uri of the `sftp` client.
+"""
+function Base.mv(
+    sftp::SFTP,
+    old_name::AbstractString,
+    new_name::AbstractString;
+)::Nothing
+    ftp_command(sftp, "rename '$(unescape_joinpath(sftp, old_name))' '$(unescape_joinpath(sftp, new_name))'")
+    return
+end
+
+
+"""
+    rm(sftp::SFTP, file::AbstractString)
+
+Remove (delete) the `file` in the uri of the `sftp` client.
+"""
+function Base.rm(sftp::SFTP, file::AbstractString)::Nothing
+    ftp_command(sftp, "rm '$(unescape_joinpath(sftp, file))'")
+    return
+end
+
+
+"""
+    rmdir(sftp::SFTP, dir::AbstractString)
+
+Remove (delete) the directory `dir` in the uri of the `sftp` client.
+"""
+function rmdir(sftp::SFTP, dir::AbstractString)::Nothing
+    ftp_command(sftp, "rmdir '$(unescape_joinpath(sftp, dir))'")
+    return
+end
+
+
+"""
+    mkdir(sftp::SFTP, dir::AbstractString)
+
+Create a directory `dir` in the uri of the `sftp` client.
+"""
+function Base.mkdir(sftp::SFTP, dir::AbstractString)::Nothing
+    ftp_command(sftp, "mkdir '$(unescape_joinpath(sftp, dir))'")
+    return
+end
 
 
 """
@@ -88,6 +264,58 @@ end
 
 
 """
+    readdir(sftp::SFTP, join::Bool = false, sort::Bool = true)
+
+Reads the current directory. Returns a vector of Strings just like the regular readdir function.
+"""
+function Base.readdir(
+    sftp::SFTP,
+    path::AbstractString=".";
+    join::Bool = false,
+    sort::Bool = true
+)::Vector{String}
+    uri = joinpath(sftp.uri, path, "")
+
+    io = IOBuffer();
+    Downloads.download(string(uri), io; sftp.downloader)
+
+    # Don't know why this is necessary
+    res = String(take!(io))
+    io = IOBuffer(res)
+    files = readlines(io; keep=false)
+
+    filter!(x->x ≠ ".." && x ≠ ".", files)
+
+    sort && sort!(files)
+    join && (files = [joinpath(uri, f).path for f in files])
+
+    return files
+end
+
+
+"""
+    splitdir(sftp::SFTP, path::AbstractString=".") -> Tuple{URI,String}
+
+Join the `path` with the path of the URI in `sftp` and then split it into the
+directory name and base name. Return a Tuple of `URI` with the split path and
+a `String` with the base name.
+"""
+function Base.splitdir(sftp::SFTP, path::AbstractString=".")::Tuple{URI,String}
+    # Join the path with the sftp.uri, ensure no trailing slashes in the path
+    # ℹ First enforce trailing slashes with joinpath(..., ""), then remove the slash with path[1:end-1]
+    path = joinpath(sftp.uri, string(path), "").path[1:end-1]
+    # ¡ workaround for URIs joinpath
+    startswith(path, "//") && (path = path[2:end])
+    # Split directory from base name
+    dir, base = splitdir(path)
+    # Convert dir to a URI with trailing slash
+    joinpath(URI(sftp.uri; path=dir), ""), base
+end
+
+
+## Helper functions for filesystem operations
+
+"""
     symlink_source!(
         sftp::SFTP,
         link::AbstractString,
@@ -137,20 +365,23 @@ function symlink_source!(
 end
 
 
-#=
-    Note, this function should not use URL:s since CURL:s api need spaces
-=#
-function handleRelativePath(fileName, sftp::SFTP)
-    baseUrl = string(sftp.uri)
-    @debug "base url" baseUrl
-    resolvedReference = URIs.resolvereference(baseUrl, fileName)
-    fileName = "'" * URIs.unescapeuri(resolvedReference.path) * "'"
-    @debug "file name" fileName
-    return fileName
-end
+"""
+    unescape_joinpath(sftp::SFTP, path::AbstractString) -> String
+
+Join the `path` with the URI path  in `sftp` and return the unescaped path.
+Note, this function should not use URL:s since CURL:s api need spaces
+"""
+unescape_joinpath(sftp::SFTP, path::AbstractString)::String =
+    URIs.resolvereference(sftp.uri, path).path |> URIs.unescapeuri
 
 
+"""
+    ftp_command(sftp::SFTP, command::String)
+
+Execute the `command` on the `sftp` server.
+"""
 function ftp_command(sftp::SFTP, command::String)
+    # Set up the command
     slist = Ptr{Cvoid}(0)
     slist = LibCURL.curl_slist_append(slist, command)
     # ¡Not sure why the unused info param is needed, but otherwise walkdir will not work!
@@ -158,11 +389,10 @@ function ftp_command(sftp::SFTP, command::String)
         set_stdopt(sftp, easy)
         Downloads.Curl.setopt(easy,  Downloads.Curl.CURLOPT_QUOTE, slist)
     end
-
+    # Execute the
     uri = string(sftp.uri)
     io = IOBuffer()
     output = nothing
-
     try
         output = Downloads.download(uri, io; sftp.downloader)
     finally
@@ -171,225 +401,4 @@ function ftp_command(sftp::SFTP, command::String)
     end
 
     return output
-end
-
-
-"""
-    islink(path) -> Bool
-
-Return `true` if `path` is a symbolic link, `false` otherwise.
-"""
-Base.islink(st::SFTPStatStruct) = filemode(st) & 0xf000 == 0xa000
-
-
-"""
-    Base.isdir(st::SFTPStatStruct)
-
-Test if st is a directory
-"""
-Base.isdir(st::SFTPStatStruct) = filemode(st) & 0xf000 == 0x4000
-
-
-"""
-    Base.isfile(st::SFTPStatStruct)
-
-Test if st is a file
-"""
-Base.isfile(st::SFTPStatStruct) = filemode(st) & 0xf000 == 0x8000
-
-
-"""
-    Base.isdir(st::SFTPStatStruct)
-
-Get the filemode of the directory
-"""
-Base.filemode(st::SFTPStatStruct) = st.mode
-
-
-"""
-    upload(sftp::SFTP, file_name::AbstractString)
-
-Upload (put) a file to the server. Broadcasting can be used too.
-
-files=readdir()
-upload.(sftp,files)
-"""
-function upload(sftp::SFTP, file_name::AbstractString)
-    open(file_name, "r") do local_file
-        file = URIs.escapeuri(basename(file_name))
-        uri = URIs.resolvereference(sftp.uri, file)
-        output = Downloads.request(string(uri), input=local_file;downloader=sftp.downloader)
-    end
-
-    return nothing
-end
-
-
-# TODO Update docstring
-"""
-    SFTPClient.download(sftp::SFTP, file_name::AbstractString,
-        output = tempname();downloadDir::Union{String, Nothing}=nothing)
-
-Download a file. You can download it and use it directly, or save it to a file.
-Specify downloadDir if you want to save downloaded files. You can also use broadcasting.
-Example:
-
-sftp = SFTP("sftp://test.rebex.net/pub/example/", "demo", "password")
-files=readdir(sftp)
-downloadDir="/tmp"
-SFTPClient.download.(sftp, files, downloadDir=downloadDir)
-
-You can also use it like this:
-df=DataFrame(CSV.File(SFTPClient.download(sftp, "/mydir/test.csv")))
-"""
-function Base.download(
-    sftp::SFTP,
-    filename::AbstractString,
-    output::String = ""
-)::String
-    # Define output
-    output = isempty(output) ? tempname() : normpath(output, basename(filename))
-    # Error handling for existing folders/files
-    if isdir(output)
-        @error "the specified download file is a directory and cannot be overwritten"
-        return output
-    elseif isfile(output)
-        @warn "specified download file already exists; overwrite (y/n)?"
-        confirm = readline()
-        while true
-            if startswith(lowercase(confirm), "y")
-                break
-            elseif startswith(lowercase(confirm), "n")
-                return output
-            end
-        end
-    end
-
-    # Download file
-    uri = URIs.resolvereference(sftp.uri, URIs.escapeuri(filename))
-    Downloads.download(string(uri), output; sftp.downloader)
-    return output
-end
-
-
-"""
-    splitdir(sftp::SFTP, path::AbstractString=".") -> Tuple{URI,String}
-
-Join the `path` with the path of the URI in `sftp` and then split it into the
-directory name and base name. Return a Tuple of `URI` with the split path and
-a `String` with the base name.
-"""
-function Base.splitdir(sftp::SFTP, path::AbstractString=".")::Tuple{URI,String}
-    # Join the path with the sftp.uri, ensure no trailing slashes in the path
-    # ℹ First enforce trailing slashes with joinpath(..., ""), then remove the slash with path[1:end-1]
-    path = joinpath(sftp.uri, string(path), "").path[1:end-1]
-    # ¡ workaround for URIs joinpath
-    startswith(path, "//") && (path = path[2:end])
-    # Split directory from base name
-    dir, base = splitdir(path)
-    # Convert dir to a URI with trailing slash
-    joinpath(URI(sftp.uri; path=dir), ""), base
-end
-
-
-"""
-    readdir(sftp::SFTP, join::Bool = false, sort::Bool = true)
-
-Reads the current directory. Returns a vector of Strings just like the regular readdir function.
-"""
-function Base.readdir(sftp::SFTP, join::Bool = false, sort::Bool = true)
-    output = nothing
-    uriString = string(sftp.uri)
-    if !endswith(uriString, "/")
-        uriString = uriString * "/"
-        sftp.uri = URI(uriString)
-    end
-
-    dir = sftp.uri.path
-    io = IOBuffer();
-    output = Downloads.download(uriString, io; sftp.downloader)
-
-    # Don't know why this is necessary
-    res = String(take!(io))
-    io2 = IOBuffer(res)
-    files = readlines(io2; keep=false)
-
-    filter!(x->x ≠ ".." && x ≠ ".", files)
-
-    sort && sort!(files)
-    join && return joinpath.(dir, files)
-
-    return files
-end
-
-
-"""
-    cd(sftp::SFTP, dir::AbstractString)
-
-Change the directory for the SFTP client.
-"""
-function Base.cd(sftp::SFTP, dir::AbstractString)
-    prev_url = sftp.uri
-    try
-        # Change server path and save in sftp
-        sftp.uri = change_uripath(sftp.uri, dir)
-        readdir(sftp)
-    catch
-        # Ensure previous url on error
-        sftp.uri = prev_url
-        rethrow()
-    end
-    return
-end
-
-
-"""
-    rm(sftp::SFTP, file_name::AbstractString)
-
-Remove (delete) the file
-"""
-function Base.rm(sftp::SFTP, file_name::AbstractString)
-    resp = ftp_command(sftp, "rm $(handleRelativePath(file_name, sftp))")
-    return nothing
-end
-
-
-"""
-    rmdir(sftp::SFTP, dir_name::AbstractString)
-
-Remove (delete) the directory
-"""
-function rmdir(sftp::SFTP, dir_name::AbstractString)
-    resp = ftp_command(sftp, "rmdir $(handleRelativePath(dir_name, sftp))")
-    return nothing
-end
-
-
-"""
-    mkdir(sftp::SFTP, dir::AbstractString)
-
-Create a directory
-"""
-function Base.mkdir(sftp::SFTP, dir::AbstractString)
-    resp = ftp_command(sftp, "mkdir $(handleRelativePath(dir, sftp))")
-    return nothing
-end
-
-
-"""
-    mv(
-        sftp::SFTP,
-        old_name::AbstractString,
-        new_name::AbstractString;
-    )
-
-Move, i.e., rename the file.
-"""
-function Base.mv(
-    sftp::SFTP,
-    old_name::AbstractString,
-    new_name::AbstractString;
-)
-    resp = ftp_command(sftp, "rename $(handleRelativePath(old_name, sftp)) $(handleRelativePath(new_name, sftp))")
-    return nothing
 end

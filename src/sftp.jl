@@ -155,6 +155,7 @@ Base.show(io::IO, sftp::SFTP)::Nothing =  println(io, "SFTP(\"$(sftp.username)@$
 
 Base.broadcastable(sftp::SFTP) = Ref(sftp)
 
+
 #* Base function overloads for comparision and sorting
 
 """
@@ -396,8 +397,8 @@ function statscan(
     end
     # Don't know why this is necessary
     res = String(take!(io))
-    io2 = IOBuffer(res)
-    stats = readlines(io2; keep=false)
+    io = IOBuffer(res)
+    stats = readlines(io; keep=false)
 
     # Instantiate stat structs
     stats = SFTPStatStruct.(stats)

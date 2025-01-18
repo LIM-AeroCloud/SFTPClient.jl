@@ -1,39 +1,71 @@
 ## Server exchange functions
 
 """
-    upload(sftp::SFTP, file::AbstractString)
+    upload(
+        sftp::SFTP,
+        file::AbstractString;
+        remote_dir::AbstractString=".",
+        local_dir::AbstractString="."
+    ) -> Nothing
 
-Upload (put) a `file` to the server. Broadcasting can be used too.
+Upload (put) a `file` on the server. If file includes a path, this is where it is put
+on the server. The path may be relative to the current uri path of the `sftp` server
+or absolute. On the local system, a `path` may be specified as last argument.
+
+# Examples
+
+```julia
+upload(sftp, "test.csv", "/tmp")
 
 files=readdir()
-upload.(sftp,files)
+upload.(sftp, files)
+```
 """
-function upload(sftp::SFTP, file::AbstractString)::Nothing
+function upload(
+    sftp::SFTP,
+    file::AbstractString,
+    path::AbstractString="."
+)::Nothing
+    # Open local file
+    file = normpath(path, basename(file))
     open(file, "r") do local_file
-        file = URIs.escapeuri(basename(file))
-        uri = URIs.resolvereference(sftp.uri, file)
+        # Define remote file
+        remote_file = change_uripath(sftp.uri, file, isfile=isfile(file)).path
+        @debug "file upload local > remote" local_file, remote_file
+        uri = change_uripath(sftp.uri, remote_file)
+        # Upload to server
         Downloads.request(string(uri), input=local_file; downloader=sftp.downloader)
     end
     return
 end
 
 
-# TODO Update docstring
 """
-    SFTPClient.download(sftp::SFTP, file_name::AbstractString,
-        output = tempname();downloadDir::Union{String, Nothing}=nothing)
+    download(
+        sftp::SFTP,
+        filename::AbstractString,
+        output::String = ""
+    ) -> String
 
-Download a file. You can download it and use it directly, or save it to a file.
-Specify downloadDir if you want to save downloaded files. You can also use broadcasting.
-Example:
+Download a file from the `sftp` server. The specified `filename` may include a path
+on the remote server, which is ignored on the local system.
 
+The file can be downloaded and saved directly to a variable or it can be saved to
+a file in the `output` directory.
+
+# Example
+
+```julia
 sftp = SFTP("sftp://test.rebex.net/pub/example/", "demo", "password")
 files=readdir(sftp)
-downloadDir="/tmp"
-SFTPClient.download.(sftp, files, downloadDir=downloadDir)
+download_dir="/tmp"
+SFTPClient.download.(sftp, files, download_dir)
+````
 
 You can also use it like this:
+```julia
 df=DataFrame(CSV.File(SFTPClient.download(sftp, "/mydir/test.csv")))
+```
 """
 function Base.download(
     sftp::SFTP,
@@ -59,7 +91,7 @@ function Base.download(
     end
 
     # Download file
-    uri = URIs.resolvereference(sftp.uri, URIs.escapeuri(filename))
+    uri = change_uripath(sftp.uri, filename, isfile=true)
     Downloads.download(string(uri), output; sftp.downloader)
     return output
 end
@@ -145,7 +177,6 @@ function Base.mv(
     new_name::AbstractString;
 )::Nothing
     ftp_command(sftp, "rename '$(unescape_joinpath(sftp, old_name))' '$(unescape_joinpath(sftp, new_name))'")
-    return
 end
 
 
@@ -154,9 +185,9 @@ end
 
 Remove (delete) the `file` in the uri of the `sftp` client.
 """
-function Base.rm(sftp::SFTP, file::AbstractString)::Nothing
-    ftp_command(sftp, "rm '$(unescape_joinpath(sftp, file))'")
-    return
+function Base.rm(sftp::SFTP, file::AbstractString; recursive::Bool=true)::Nothing
+    r = recursive ? "-r " : ""
+    ftp_command(sftp, "rm $r'$(unescape_joinpath(sftp, file))'")
 end
 
 
@@ -166,8 +197,8 @@ end
 Remove (delete) the directory `dir` in the uri of the `sftp` client.
 """
 function rmdir(sftp::SFTP, dir::AbstractString)::Nothing
+    Base.depwarn("rmdir(sftp, dir) is deprecated. Use rm(sftp, dir; recursive=true) instead.", :rmdir)
     ftp_command(sftp, "rmdir '$(unescape_joinpath(sftp, dir))'")
-    return
 end
 
 
@@ -178,7 +209,6 @@ Create a directory `dir` in the uri of the `sftp` client.
 """
 function Base.mkdir(sftp::SFTP, dir::AbstractString)::Nothing
     ftp_command(sftp, "mkdir '$(unescape_joinpath(sftp, dir))'")
-    return
 end
 
 
@@ -380,7 +410,7 @@ unescape_joinpath(sftp::SFTP, path::AbstractString)::String =
 
 Execute the `command` on the `sftp` server.
 """
-function ftp_command(sftp::SFTP, command::String)
+function ftp_command(sftp::SFTP, command::String)::Nothing
     # Set up the command
     slist = Ptr{Cvoid}(0)
     slist = LibCURL.curl_slist_append(slist, command)
@@ -392,13 +422,12 @@ function ftp_command(sftp::SFTP, command::String)
     # Execute the
     uri = string(sftp.uri)
     io = IOBuffer()
-    output = nothing
+    output = ""
     try
         output = Downloads.download(uri, io; sftp.downloader)
     finally
         LibCURL.curl_slist_free_all(slist)
         reset_easy_hook(sftp)
     end
-
-    return output
+    return
 end

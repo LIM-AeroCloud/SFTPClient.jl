@@ -216,16 +216,17 @@ end
 
 
 """
-    change_uripath(uri::URI, path::AbstractString) -> URI
+    change_uripath(uri::URI, path::AbstractString; isfile::Bool=false) -> URI
 
 Return an updated `uri` struct with the given `path`.
+Set `isfile` to `true`, if the path is a file to omit the trailing slash.
 """
-function change_uripath(uri::URI, path::AbstractString)::URI
+function change_uripath(uri::URI, path::AbstractString...; isfile::Bool=false)::URI
     # Issue with // at the beginning of a path can be resolved by ensuring non-empty paths
-    if !isdirpath(path) || isempty(path)
-        path *= "/"
-    end
-    URIs.resolvereference(uri, URIs.escapepath(path))
+    url = joinpath(uri, string.(path...))
+    isfile || (url = joinpath(url, ""))
+    @debug "URI path" url.path
+    URIs.resolvereference(uri, URIs.escapepath(url.path))
 end
 
 
@@ -421,7 +422,7 @@ the same folder is obtained internally. If you need stat data for more than obje
 in the same folder, use `statscan` for better performance and reduced connections
 to the server.
 """
-function stat(sftp::SFTP, path::AbstractString=".")::SFTPStatStruct
+function Base.stat(sftp::SFTP, path::AbstractString=".")::SFTPStatStruct
     # Split path in basename and remaining path
     uri, base = splitdir(sftp, path)
     # Get stats of all path objects in the containing folder of base

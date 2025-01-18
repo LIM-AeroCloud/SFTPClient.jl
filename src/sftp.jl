@@ -1,15 +1,3 @@
-## Load packages
-# import FileWatching as fw
-import Downloads
-import LibCURL
-import URIs
-import CSV
-import Dates
-import Downloads: Downloader, Curl.Easy
-import URIs: URI
-import Logging
-
-
 ## Structs
 
 """
@@ -92,7 +80,7 @@ Hold information for file system objects on a Server.
 
 Parse the `stats` string and return an `SFTPStatStruct`.
 
-The `stats` is of the format:
+The `stats` are of the format:
 
     "d--x--x---  151 ftp      ftp          8192 Dec  2  2023 .."
 """
@@ -163,12 +151,33 @@ end
 
 ## Overload Base functions
 
-Base.show(io::IO, sftp::SFTP) =  println(io, "SFTP(\"$(sftp.username)@$(sftp.uri.host)\")")
+Base.show(io::IO, sftp::SFTP)::Nothing =  println(io, "SFTP(\"$(sftp.username)@$(sftp.uri.host)\")")
 
 Base.broadcastable(sftp::SFTP) = Ref(sftp)
 
 
-## Custom Exceptions
+#* Base function overloads for comparision and sorting
+
+"""
+    isequal(a::SFTPStatStruct, b::SFTPStatStruct) -> Bool
+
+Comares equality between the description (`desc` fields) of two `SFTPStatStruct` objects
+and returns `true` for equality, otherwise `false`.
+"""
+Base.isequal(a::SFTPStatStruct, b::SFTPStatStruct)::Bool =
+    isequal(a.desc, b.desc) && isequal(a.size, b.size) && isequal(a.mtime, b.mtime)
+
+
+"""
+    isless(a::SFTPStatStruct, b::SFTPStatStruct) -> Bool
+
+Comares the descriptions (`desc` fields) of two `SFTPStatStruct` objects
+and returns `true`, if `a` is lower than `b`, otherwise `false`.
+"""
+Base.isless(a::SFTPStatStruct, b::SFTPStatStruct)::Bool = a.desc < b.desc
+
+
+## Exception handling
 
 """
     PathNotFoundError(path)
@@ -184,9 +193,17 @@ function Base.showerror(io::IO, e::PathNotFoundError)
 end
 
 
+"""
+    linkerror(link::String) -> Nothing
+
+Show an error for an anticipated `link` format.
+"""
+linkerror(link::String)::Nothing = @error "link '$link' did not have anticipated format; link shown as file in walkdir iterator"
+
+
 ## Helper functions for processing of server paths
 
-#¡ Trailing slashes needed for StatStruct!
+#¡ Trailing slashes needed for StatStruct and change_uripath!
 """
     set_url(url::URI) -> URI
 
@@ -199,47 +216,17 @@ end
 
 
 """
-    change_uripath(uri::URI, path::AbstractString) -> URI
+    change_uripath(uri::URI, path::AbstractString; isfile::Bool=false) -> URI
 
 Return an updated `uri` struct with the given `path`.
+Set `isfile` to `true`, if the path is a file to omit the trailing slash.
 """
-function change_uripath(uri::URI, path::AbstractString)::URI
-    isdirpath(path) || (path *= "/")
-    uri = URIs.resolvereference(uri, URIs.escapepath(path))
-    # Fix issue in URIs until PR #62 is merged (can be removed after merge)
-    startswith(uri.path, "//") && (uri = URIs.resolvereference(uri, uri.path[2:end]))
-    return uri
-end
-
-
-"""
-    splitbase(path::AbstractString; strip_empty_base::Bool=true, return_dirpath::Bool=true) -> Tuple{String,String}
-
-Split the `path` in a directory and base part, where the base part is the last non-empty part
-after the path separator (backslash on windows, slash on other OS).
-Return a `Tuple{String,String}` with the `dirname` and `basename`.
-
-Trailing slashes in a `path` are ignored and the last given basename is always split
-unless `strip_empty_base` is set to `false`. In this case, the full `path` is returned
-as directory together with an empty basename.
-Directories are returned with a trailing path separator unless `trailing_slash` is set to `false`.
-The trailing path separator is OS-dependent. If `url` is set to `true`, slashes are
-enforced as path separators.
-"""
-function splitbase(
-    path::AbstractString;
-    strip_empty_base::Bool=true,
-    trailing_slash::Bool=true,
-    url::Bool=false
-)::Tuple{String,String}
-    # Handle trailing slash in path
-    path_separator = Sys.iswindows() && !url ? "\\" : "/"
-    strip_empty_base && endswith(path, path_separator) && (path = path[1:end-1])
-    # Split directory and base
-    dir, base = dirname(path), basename(path)
-    # Enforce trailing slash or os dependent separator
-    trailing_slash && (dir *= path_separator)
-    return dir, base
+function change_uripath(uri::URI, path::AbstractString...; isfile::Bool=false)::URI
+    # Issue with // at the beginning of a path can be resolved by ensuring non-empty paths
+    url = joinpath(uri, string.(path...))
+    isfile || (url = joinpath(url, ""))
+    @debug "URI path" url.path
+    URIs.resolvereference(uri, URIs.escapepath(url.path))
 end
 
 
@@ -370,18 +357,33 @@ end
 ## Helper functions for path stats
 
 """
-    statscan(sftp::SFTP, path::AbstractString="."; show_cwd_and_parent::Bool=false) -> Vector{SFTPStatStruct}
+    statscan(
+        sftp::SFTP,
+        path::AbstractString=".";
+        sort::Bool=true,
+        show_cwd_and_parent::Bool=false
+    ) -> Vector{SFTPStatStruct}
 
 Like `stat`, but returns a Vector of `SFTPStatStruct` with filesystem stats
 for all objects in the given `path`.
 
+** This should be preferred over `stat` for performance reasons. **
+
 Note that you can only run this on directories.
 
+By default, the `SFTPStatStruct` vector is sorted by the descriptions (`desc` fields).
+For large folder contents, `sort` can be set to `false` to increase performance, if the
+output order is irrelevant.
 If `show_cwd_and_parent` is set to `true`, the `SFTPStatStruct` vector includes entries for
 `"."` and `".."` on position 1 and 2, respectively.
 """
-function statscan(sftp::SFTP, path::AbstractString="."; show_cwd_and_parent::Bool=false)::Vector{SFTPStatStruct}
-    # Easy hook for current session
+function statscan(
+    sftp::SFTP,
+    path::AbstractString=".";
+    sort::Bool=true,
+    show_cwd_and_parent::Bool=false
+)::Vector{SFTPStatStruct}
+    # Easy hook to get stats on files
     sftp.downloader.easy_hook = (easy::Easy, info) -> begin
         set_stdopt(sftp, easy)
     end
@@ -396,15 +398,16 @@ function statscan(sftp::SFTP, path::AbstractString="."; show_cwd_and_parent::Boo
     end
     # Don't know why this is necessary
     res = String(take!(io))
-    io2 = IOBuffer(res)
-    stats = readlines(io2; keep=false)
+    io = IOBuffer(res)
+    stats = readlines(io; keep=false)
 
     # Instantiate stat structs
     stats = SFTPStatStruct.(stats)
-    # Filter current and parent directory
+    # Filter current and parent directory and sort by description
     if !show_cwd_and_parent
-        filter!(s -> s.desc != "." && s.desc != "..", stats)
+        filter!(s -> s.desc ≠ "." && s.desc ≠ "..", stats)
     end
+    sort && sort!(stats)
     return stats
 end
 
@@ -419,11 +422,13 @@ the same folder is obtained internally. If you need stat data for more than obje
 in the same folder, use `statscan` for better performance and reduced connections
 to the server.
 """
-function stat(sftp::SFTP, path::AbstractString=".")::SFTPStatStruct
+function Base.stat(sftp::SFTP, path::AbstractString=".")::SFTPStatStruct
     # Split path in basename and remaining path
-    dir, base = (path == "." || path == "..") ? (path, path) :  splitbase(path)
+    uri, base = splitdir(sftp, path)
     # Get stats of all path objects in the containing folder of base
-    stats = statscan(sftp, dir, show_cwd_and_parent=true)
+    stats = statscan(sftp, uri.path, show_cwd_and_parent=true)
+    # Special case for root
+    uri.path == "/" && isempty(base) && return stats[1]
     # Find and return the stats of base
     i = findbase(stats, base, path)
     return stats[i]
@@ -458,8 +463,15 @@ function parse_mode(s::AbstractString)::UInt
         throw(ArgumentError("`s` should be an `AbstractString` of length `10`"))
     end
     # Determine file system object type (dir or file)
-    dirChar = s[1]
-    dir = (dirChar == 'd') ? 0x4000 : 0x8000
+    dir_char = s[1]
+    dir = if dir_char == 'd'
+        0x4000
+    elseif dir_char == 'l'
+        0xa000
+    else
+        0x8000
+    end
+    @debug "mode" dir_char
 
     # Determine owner
     owner = str2number(s[2:4])

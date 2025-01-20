@@ -79,7 +79,7 @@ function Base.download(
         @error "the specified download file is a directory and cannot be overwritten"
         return output
     elseif isfile(output)
-        @warn "specified download file already exists; overwrite (y/n)?"
+        @warn "$output already exists; overwrite (y/n)?"
         confirm = readline()
         while true
             if startswith(lowercase(confirm), "y")

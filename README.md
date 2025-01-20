@@ -1,9 +1,19 @@
 # Julia SFTP Client 
+
 Package for working with SFTP in Julia. Built on Downloads.jl, but in my opinion much easier to use. Downloads.jl is in turn based on Curl. 
 
 The Julia SFTP client supports username/password as well as certificates for authentication. 
 
-The following methods are supported: readdir, download, upload, cd, rm, rmdir, mkdir, mv, sftpstat (like stat)
+The following methods are supported: readdir, download, upload, cd, rm, rmdir, mkdir, mv, sftpstat
+(like stat)
+
+
+
+[![Stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://LIM-AeroCloud.github.io/SFTPClient.jl/stable/)
+[![Dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://LIM-AeroCloud.github.io/SFTPClient.jl/dev/)
+[![Build Status](https://github.com/LIM-AeroCloud/SFTPClient.jl/actions/workflows/CI.yml/badge.svg?branch=dev)](https://github.com/LIM-AeroCloud/SFTPClient.jl/actions/workflows/CI.yml?query=branch%3Adev)
+[![Coverage](https://codecov.io/gh/LIM-AeroCloud/SFTPClient.jl/branch/dev/graph/badge.svg)](https://codecov.io/gh/LIM-AeroCloud/SFTPClient.jl)
+
  
 
 Examples:
@@ -35,7 +45,3 @@ Examples:
 ```
 
 [API Documentation](https://stensmo.github.io/SFTPClient.jl/stable/reference/)
-
-
-
-

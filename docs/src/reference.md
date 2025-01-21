@@ -1,6 +1,6 @@
-# SFTPClient API Documentation
+# SFTP API Documentation
 
 ```@autodocs
-Modules = [SFTPClient]
+Modules = [SFTP]
 Order   = [:function, :type]
 ```

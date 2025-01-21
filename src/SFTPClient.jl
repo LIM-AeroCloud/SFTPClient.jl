@@ -1,4 +1,4 @@
-module SFTPClient
+module SFTP
 
 import Downloads
 import LibCURL
@@ -14,4 +14,4 @@ include("filesystem.jl")
 
 export SFTP, SFTPStatStruct, PathNotFoundError, upload, rmdir, statscan
 
-end # module SFTPClient
+end # module SFTP

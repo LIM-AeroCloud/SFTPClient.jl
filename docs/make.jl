@@ -1,10 +1,10 @@
 using Documenter
-using SFTPClient
+using SFTP
 
 makedocs(
-    modules=[SFTPClient],
+    modules=[SFTP],
     authors="Peter Bräuer <pb866.git@gmail.com> and contributors",
-    sitename="Julia SFTPClient Documentation",
+    sitename="Julia SFTP Documentation",
     format=Documenter.HTML(;
         canonical="https://LIM-AeroCloud.github.io/SFTP.jl",
         edit_link="dev",
@@ -16,6 +16,6 @@ makedocs(
 )
 
 deploydocs(
-    repo = "github.com/LIM-AeroCloud/SFTPClient.jl.git",
+    repo = "github.com/LIM-AeroCloud/SFTP.jl.git",
     devbranch="dev"
 )

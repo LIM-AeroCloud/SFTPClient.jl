@@ -1,4 +1,4 @@
-using SFTPClient
+using SFTP
 using Test
 
 
@@ -10,16 +10,16 @@ stats = statscan(sftp)
 files = readdir(sftp)
 
 @show tempdir(), isdir(tempdir())
-SFTPClient.download.(sftp, files, tempdir())
+download.(sftp, files, tempdir())
 
 cd(sftp, "../")
 dirs = readdir(sftp)
 
 cd(sftp, "..")
 
-SFTPClient.download.(sftp, "readme.txt", ".")
+download.(sftp, "readme.txt", ".")
 
-walkdirRoot, walkdirDirs, walkdirFiles = SFTPClient.walkdir(sftp, ".")
+walkdirRoot, walkdirDirs, walkdirFiles = walkdir(sftp, ".")
 
 actualStructs = [
     SFTPStatStruct("KeyGenerator.png", 0x0000000000008180, 1, "demo", "users", 36672, 1.1742624e9)

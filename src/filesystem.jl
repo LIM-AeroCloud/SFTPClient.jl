@@ -59,12 +59,12 @@ a file in the `output` directory.
 sftp = SFTP("sftp://test.rebex.net/pub/example/", "demo", "password")
 files=readdir(sftp)
 download_dir="/tmp"
-SFTPClient.download.(sftp, files, download_dir)
+download.(sftp, files, download_dir)
 ````
 
 You can also use it like this:
 ```julia
-df=DataFrame(CSV.File(SFTPClient.download(sftp, "/mydir/test.csv")))
+df=DataFrame(CSV.File(download(sftp, "/mydir/test.csv")))
 ```
 """
 function Base.download(

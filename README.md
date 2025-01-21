@@ -9,22 +9,22 @@ The following methods are supported: readdir, download, upload, cd, rm, rmdir, m
 
 
 
-[![Stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://LIM-AeroCloud.github.io/SFTPClient.jl/stable/)
-[![Dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://LIM-AeroCloud.github.io/SFTPClient.jl/dev/)
-[![Build Status](https://github.com/LIM-AeroCloud/SFTPClient.jl/actions/workflows/CI.yml/badge.svg?branch=dev)](https://github.com/LIM-AeroCloud/SFTPClient.jl/actions/workflows/CI.yml?query=branch%3Adev)
-[![Coverage](https://codecov.io/gh/LIM-AeroCloud/SFTPClient.jl/branch/dev/graph/badge.svg)](https://codecov.io/gh/LIM-AeroCloud/SFTPClient.jl)
+[![Stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://LIM-AeroCloud.github.io/SFTP.jl/stable/)
+[![Dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://LIM-AeroCloud.github.io/SFTP.jl/dev/)
+[![Build Status](https://github.com/LIM-AeroCloud/SFTP.jl/actions/workflows/CI.yml/badge.svg?branch=dev)](https://github.com/LIM-AeroCloud/SFTP.jl/actions/workflows/CI.yml?query=branch%3Adev)
+[![Coverage](https://codecov.io/gh/LIM-AeroCloud/SFTP.jl/branch/dev/graph/badge.svg)](https://codecov.io/gh/LIM-AeroCloud/SFTP.jl)
 
  
 
 Examples:
 ```
 
-    using SFTPClient
+    using SFTP
     sftp = SFTP("sftp://test.rebex.net/pub/example/", "demo", "password")
     files=readdir(sftp)
     # On Windows, replace this with an appropriate path
     downloadDir="/tmp/"
-    SFTPClient.download.(sftp, files, downloadDir=downloadDir)
+    SFTP.download.(sftp, files, downloadDir=downloadDir)
 
     statStructs = sftpstat(sftp)
 
@@ -34,7 +34,7 @@ Examples:
     
 ```
     #You can also use it like this
-    df=DataFrame(CSV.File(SFTPClient.download(sftp, "/mydir/test.csv")))
+    df=DataFrame(CSV.File(SFTP.download(sftp, "/mydir/test.csv")))
     # For certificates you can use this for setting it up
     sftp = SFTP("sftp://mysitewhereIhaveACertificate.com", "myuser")
     # Since 0.3.8 you can also do this
@@ -44,4 +44,4 @@ Examples:
 
 ```
 
-[API Documentation](https://stensmo.github.io/SFTPClient.jl/stable/reference/)
+[API Documentation](https://stensmo.github.io/SFTP.jl/stable/reference/)

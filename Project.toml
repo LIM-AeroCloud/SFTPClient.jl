@@ -1,7 +1,7 @@
-name = "SFTPClient"
-uuid = "6f0ef2a9-1531-47bc-8c87-f4ce50005508"
-authors = ["Erik Stensmo "]
-version = "0.4.4"
+name = "SFTP"
+uuid = "8d2fbbfd-aa0d-4a61-8f69-e82bb55313de"
+authors = ["Peter Bräuer <pb866.git@gmail.com>", "Erik Stensmo"]
+version = "0.5.0-DEV"
 
 [deps]
 ArgTools = "0dad84c5-d112-42e6-8d28-ef12dabb789f"
@@ -20,7 +20,7 @@ Downloads = "1.4.3"
 LibCURL = "0.6"
 Logging = "1.10"
 NetworkOptions = "1.2"
-URIs = "1.5.0"
+URIs = "1.5"
 julia = "1.10"
 
 [extras]

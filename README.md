@@ -20,13 +20,13 @@ Examples:
 ```
 
     using SFTP
-    sftp = SFTP("sftp://test.rebex.net/pub/example/", "demo", "password")
+    sftp = SFTP.Client("sftp://test.rebex.net/pub/example/", "demo", "password")
     files=readdir(sftp)
     # On Windows, replace this with an appropriate path
     downloadDir="/tmp/"
-    SFTP.download.(sftp, files, downloadDir=downloadDir)
+    download.(sftp, files, downloadDir=downloadDir)
 
-    statStructs = sftpstat(sftp)
+    statStructs = statscan(sftp)
 
 ```
    
@@ -34,11 +34,11 @@ Examples:
     
 ```
     #You can also use it like this
-    df=DataFrame(CSV.File(SFTP.download(sftp, "/mydir/test.csv")))
+    df=DataFrame(CSV.File(download(sftp, "/mydir/test.csv")))
     # For certificates you can use this for setting it up
-    sftp = SFTP("sftp://mysitewhereIhaveACertificate.com", "myuser")
+    sftp = SFTP.Client("sftp://mysitewhereIhaveACertificate.com", "myuser")
     # Since 0.3.8 you can also do this
-    sftp = SFTP("sftp://mysitewhereIhaveACertificate.com", "myuser", "cert.pub", "cert.pem") # Assumes cert.pub and cert.pem is in your current path
+    sftp = SFTP.Client("sftp://mysitewhereIhaveACertificate.com", "myuser", "cert.pub", "cert.pem") # Assumes cert.pub and cert.pem is in your current path
     # The cert.pem is your certificate (private key), and the cert.pub can be obtained from the private key.
     # ssh-keygen -y  -f ./cert.pem. Save the output into "cert.pub". 
 

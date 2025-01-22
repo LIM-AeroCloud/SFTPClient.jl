@@ -1,5 +1,7 @@
 # Julia SFTP Client 
 
+⚠️ This package is built on [SFTPClient.jl](https://github.com/stensmo/SFTPClient.jl.git) and is now developed as [LIM-AeroCloud/SFTP.jl](https://github.com/LIM-AeroCloud/SFTP.jl.git). This package is archived to preserve the git history of the most recent improvements of _SFTPClient.jl_.
+
 Package for working with SFTP in Julia. Built on Downloads.jl, but in my opinion much easier to use. Downloads.jl is in turn based on Curl. 
 
 The Julia SFTP client supports username/password as well as certificates for authentication. 
